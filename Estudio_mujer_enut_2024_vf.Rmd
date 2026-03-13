@@ -1,0 +1,2733 @@
+---
+title: "Procesamiento de información - Estudio de la mujer 2026"
+subtitle: Tiempo, género y trabajo en el Servicio Civil Peruano
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+**Autora:** Gianella Grijalva \n
+
+**Apoyo programático:** Mariano Díaz \n
+
+**Institución:** Autoridad Nacional del Servicio Civil – SERVIR \n
+
+**Año:** 2026 \n
+
+
+## Objetivo del script
+
+**Replicabilidad del procesamiento para el capítulo IV del Estudio**
+
+Este script descarga, procesa y construye bases maestras a partir de los módulos de la
+Encuesta Nacional de Uso del Tiempo (ENUT 2024) del INEI.
+
+El procesamiento incluye:
+
+1. Descarga automática de módulos
+2. Importación desde archivos ZIP
+3. Limpieza de nombres de variables
+4. Creación de identificadores de hogar y persona
+5. Construcción de bases maestras para análisis
+6. Limpieza del entorno
+7. Construcción de bases de análisis del uso del tiempo
+8. Generación de la base complilada para el análisis conjunto
+9. Elaboración de cuadros y gráficos
+
+Este script permite replicar completamente el procesamiento de datos utilizado en el capítulo:
+"Tiempo, género y trabajo en el Servicio Civil Peruano".
+del Estudio: La Mujer en el Servicio Civil Peruano, 2026
+
+Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-mujer-en-el-servicio-civil-peruano-2026
+
+
+## 0. Carga de Librerías  (Load libraries)
+
+**Instalación de librerías**
+
+```{r, message=FALSE, warning=FALSE}
+library(rvest)
+library(stringr)
+library(readr)
+library(purrr)
+library(dplyr)
+library(tidyr)
+library(kableExtra)
+library(survey)
+library(ggplot2)
+library(patchwork)
+```
+
+## 1. Descarga automática de las Bases de Datos ENUT (Download ENUT data)
+
+**Creación automatizada de enlaces de descarga**
+
+Las bases de datos de INEI no se pueden web scrappear, en cambio tienen patrones en los enlaces de descarga.
+
+```{r}
+modulos <- c("1849","1850", "1851", "1852", "1853", "1854", "1855")
+codigo_encuesta <- "963"
+
+links_zip <- paste0(
+  "https://proyectos.inei.gob.pe/iinei/srienaho/descarga/CSV/",
+  codigo_encuesta,
+  "-Modulo",
+  modulos,
+  ".zip"
+)
+```
+
+## 2. Importación de los módulos zip de la ENUT (Import modules)
+
+**2.1. Importar las bases de datos de los módulos ZIP**
+
+Se importó las bases de datos directamente, sin la necesidad de descargar las carpetas zip. El código crea archivoz zip temporales, los extrae e importa la base de datos.
+
+```{r, message=FALSE, warning=FALSE}
+
+leer_csv_desde_zip <- function(url) {
+  zip_tmp <- tempfile(fileext = ".zip")
+  ok <- try(
+    download.file(url, zip_tmp, mode = "wb", quiet = TRUE),
+    silent = TRUE
+  )
+  if (inherits(ok, "try-error")) {
+    message("✗ No existe: ", basename(url))
+    return(NULL)
+  }
+  contenido <- unzip(zip_tmp, list = TRUE)
+  csv_name <- contenido$Name[str_detect(contenido$Name, "\\.csv$")][1]
+  if (is.na(csv_name)) return(NULL)
+  csv_tmp <- unzip(zip_tmp, files = csv_name, exdir = tempdir())
+  read_csv(csv_tmp, show_col_types = FALSE)
+}
+
+bases_inei <- map(links_zip, leer_csv_desde_zip)
+```
+
+**2.2. Convertir lista de bases de datos**
+
+Asigna nombres a cada base de datos importada para facilitar su identificación.
+
+```{r, message=FALSE, warning=FALSE}
+# Asignar nombres a cada base dentro de la lista
+names(bases_inei) <- paste0("enut_2024_", seq_along(bases_inei))
+
+# Visualizar los nombres de las bases importadas
+names(bases_inei)
+```
+## 3. Limpieza de nombres de variables de la Base de datos (Data cleaning)
+
+**3.1. Limpieza de las bases de datos originales**
+
+Limpiamos los nombres de las bases de datos
+
+```{r} 
+bases_inei <- purrr::map(bases_inei, ~ dplyr::rename_with(.x, tolower))
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Crear objetos individuales para facilitar el trabajo posterior
+names(bases_inei) <- paste0("enut_2024_", seq_along(bases_inei))
+
+list2env(bases_inei, envir = .GlobalEnv)
+```
+
+## 4. Creación de identificadores (Create household and individual IDs)
+
+**4.1. Creación de identificadores (hogares y personas)**
+
+1. Función para crear ID de HOGAR (Aplica a TODOS los módulos)
+2. Función para crear ID de PERSONA (Aplica SOLO a módulos individuales)
+
+```{r, message=FALSE, warning=FALSE}
+crear_id_hogar <- function(df) {
+  df %>%
+    mutate(
+      id_hogar = paste(cong, nselv, hogar, sep = "_")
+    )
+}
+
+crear_id_persona <- function(df) {
+  df %>%
+    mutate(
+      id_persona = paste(cong, nselv, hogar, p201, sep = "_")
+    )
+}
+```
+
+**4.2. Aplicar identificadores a los respectivos módulos**
+
+a. Módulos hogar
+
+```{r}
+enut_2024_1 <- enut_2024_1 %>% 
+  crear_id_hogar()
+```
+
+b. Módulos personas
+
+```{r}
+enut_2024_2 <- enut_2024_2 %>%
+  crear_id_hogar() %>%
+  crear_id_persona()
+
+enut_2024_6 <- enut_2024_6 %>%
+  crear_id_hogar() %>%
+  crear_id_persona()
+
+enut_2024_7 <- enut_2024_7 %>%
+  crear_id_hogar() %>%
+  crear_id_persona()
+```
+
+## 5. Construcción de Bases de Datos Maestras (Build master datasets)
+
+**5.1. Contrucción de Base Maestra de Hogares**
+
+```{r}
+base_hogares <- enut_2024_1 %>%
+  select(
+    id_hogar,
+    cong,
+    nselv,
+    hogar
+    # aquí luego se agregarán variables del hogar
+  ) %>%
+  distinct()
+
+head(base_hogares)
+```
+
+**5.2. Construcción de Base Maestra de Personas**
+
+a) Tomamos de base el módulo 200: características demográficas
+
+b) Luego anexamos también el módulo 100: características del hogar
+
+c) Finalmente, también anexamos el módulo 700: variables de empleo
+
+```{r}
+base_personas <- enut_2024_2 %>%
+  select(
+    id_persona,
+    id_hogar,
+    cong,
+    nselv,
+    hogar,
+    p201,       # código de persona
+    p203,       # relación jefe de hogar
+    p204,       # sexo
+    p205_a,     # edad en años
+    p206,       # miembro del hogar
+    p207,       # ausente en el hogar
+    p208,       # presente en el hogar
+    p213,       # nivel educativo
+    p213_a,     # años de estudio
+    per_resfin, # resultado de la encuesta persona
+    resfin,     # resultado final hogar
+    resfin_v    # resultado final vivienda
+    # aquí luego se agregarán otras variables, etc.
+  ) %>%
+  distinct()
+
+  # Variables del módulo de hogar
+  base_personas <- base_personas %>%
+    left_join(
+      enut_2024_1 %>%
+        select(
+          id_hogar,
+          # Variables base hogar
+          area,   # urbana o rural
+          ubigeo  # codigo inei
+        ),
+      by = "id_hogar"
+    )  
+  
+  # Variables del módulo de empleo
+  base_personas <- base_personas %>%
+    left_join(
+      enut_2024_7 %>%
+        select(
+          id_persona,
+          p703,
+          p704,
+          p705,
+          # Variables base de empleo
+          p710,        # categoría ocupacional (asalariado)
+          p711,        # sector de empleo
+          p717,        # tamaño de entidad
+          p708_pod,    # código ocupacional
+          p766         # nivel educativo de empleo 
+        ),
+      by = "id_persona"
+    )  
+
+  # Variables del módulo de tiempo
+  base_personas <- base_personas %>%
+    left_join(
+      enut_2024_6 %>%
+        select(
+          id_persona,
+          # Variable estado civil
+          estado_civil
+          ) %>%
+        distinct(),
+      by = "id_persona"
+    )
+  
+head(base_personas)
+
+```
+
+**Notas metodológicas:** 
+
+(1) Las variables de área de residencia y ubigeo se incorporan desde el módulo de hogar (100), utilizando como llave el identificador del hogar. Estas variables se consideran atributos del hogar compartidos por todos sus miembros.
+
+(2) Se seleccionan únicamente las variables necesarias para la construcción de indicadores de empleo, con el fin de mantener el script liviano y trazable. Estas variables de empleo se incorporan a la base de personas mediante un cruce m:1 usando el identificador individual.
+
+
+**5.3. Recodificación y asignación de etiquetas de variables (base_personas)**
+
+Recodificamos las variables originales, y en algunos casos se crean nuevas variables de caracterización
+
+Variables sociodemográficas
+
+```{r}
+base_personas <- base_personas %>%
+  mutate(
+
+# -------------------------------------------------
+# VARIABLES SOCIODEMOGRÁFICAS
+# -------------------------------------------------
+
+    # Relación con jefe de hogar
+    p203 = factor(
+      p203,
+      levels = 1:13,
+      labels = c(
+        "Jefa/Jefe",
+        "Esposo(a)",
+        "Hija(o) / Hijastra(o)",
+        "Nuera/Yerno",
+        "Nieta(o)",
+        "Madre/Padre",
+        "Suegra/Suegro",
+        "Hermana(o)",
+        "Cuñada(o)",
+        "Otra(o) pariente",
+        "Trabajadora(or) del Hogar",
+        "Pensionista",
+        "Otra(o) no pariente"
+      )
+    ),
+
+    # Sexo
+    sexo = factor(
+      p204,
+      levels = c(1,2),
+      labels = c("Hombre","Mujer")
+    ),
+
+    # Miembros del hogar
+    p206 = factor(p206, levels = c(1,2), labels = c("Sí","No")),
+    p207 = factor(p207, levels = c(1,2), labels = c("Sí","No")),
+    p208 = factor(p208, levels = c(1,2), labels = c("Sí","No")),
+
+    # Edad
+    rango_edad = case_when(
+      p205_a <= 12 ~ 1,
+      p205_a <= 17 ~ 2,
+      p205_a <= 29 ~ 3,
+      p205_a <= 39 ~ 4,
+      p205_a <= 49 ~ 5,
+      p205_a <= 59 ~ 6,
+      p205_a >= 60 ~ 7
+    ),
+
+    rango_edad = factor(
+      rango_edad,
+      levels = 1:7,
+      labels = c(
+        "Hasta 12 años",
+        "13 a 17 años",
+        "18 a 29 años",
+        "30 a 39 años",
+        "40 a 49 años",
+        "50 a 59 años",
+        "60 años a más"
+      )
+    ),
+
+    # Nivel educativo
+    niv_edu = case_when(
+      p766 %in% c(1,2) ~ 1,
+      p766 %in% c(3,4,7) ~ 2,
+      p766 %in% c(5,6) ~ 3,
+      p766 %in% c(8,9) ~ 4,
+      p766 %in% c(10,11,12) ~ 5
+    ),
+
+    niv_edu = factor(
+      niv_edu,
+      levels = 1:5,
+      labels = c(
+        "Sin nivel / Inicial",
+        "Primaria y Ed. Básica",
+        "Secundaria",
+        "Superior no universitaria",
+        "Universitaria y Postgrado"
+      )
+    ),
+
+    # Estado civil
+    estado_civil = factor(
+      estado_civil,
+      levels = 1:6,
+      labels = c(
+        "Conviviente",
+        "Casado/a",
+        "Viudo/a",
+        "Divorciado/a",
+        "Separado/a",
+        "Soltero/a"
+      )
+    ),
+
+    ecivil = case_when(
+      estado_civil %in% c("Conviviente","Casado/a") ~ "Con pareja",
+      estado_civil %in% c("Viudo/a","Divorciado/a","Separado/a","Soltero/a") ~ "Sin pareja"
+    ),
+
+    ecivil = factor(ecivil)
+  )
+```
+
+Variables de empleo
+
+```{r}
+base_personas <- base_personas %>%
+  mutate(
+    
+# -------------------------------------------------
+# VARIABLES DE EMPLEO
+# -------------------------------------------------
+
+    # Categoría ocupacional
+    p710 = factor(
+      p710,
+      levels = 1:10,
+      labels = c(
+        "Empleador o patrono",
+        "Trabajador independiente",
+        "Empleado u obrero",
+        "Ayudante en negocio familiar",
+        "Ayudante en empleo de familiar",
+        "Trabajador del hogar",
+        "Aprendiz / practicante remunerado",
+        "Practicante sin remuneración",
+        "Ayudante negocio familiar otro hogar",
+        "Ayudante empleo familiar otro hogar"
+      )
+    ),
+
+    # Sector institucional (desde la p711, solo para asalariados)
+    sector_inst = factor(
+      p711,
+      levels = 1:6,
+      labels = c(
+        "Fuerzas Armadas / Policía Nacional del Perú",
+        "Administración pública",
+        "Empresa pública",
+        "Empresas especiales de servicios (SERVICE)",
+        "Empresa o patrono privado",
+        "Otra"
+      )
+    ),
+
+    sector = case_when(
+      p711 == 1 ~ 1,              # FFAA / PNP
+      p711 %in% c(2,3) ~ 2,       # Sector público
+      p711 %in% c(4,5,6) ~ 3,     # Sector privado
+      TRUE ~ NA_real_
+    ),
+    
+    sector = factor(
+      sector,
+      levels = c(1,2,3),
+      labels = c(
+        "FFAA / Policía",
+        "Sector público",
+        "Sector privado"
+      )
+    ),
+
+    # GRUPO OCUPACIONAL
+
+    # Código ocupacional a nivel de cuatro dígitos (desde la p708_pod)
+    p708_pod_str = stringr::str_pad(
+      as.character(p708_pod),
+      width = 4,
+      side = "left",
+      pad = "0"
+    ),
+
+    # Código ocupacional a nivel de dos dígitos
+    gocupa_2d = as.numeric(substr(p708_pod_str, 1, 2)),
+
+    # Código ocupacional a nivel de un dígito
+    gr_grupo_ocu = case_when(
+      gocupa_2d %in% c(11,13) ~ 1,
+      gocupa_2d %in% c(26,41,21,24,25) ~ 2,
+      gocupa_2d %in% c(33,31,42,35,34,43) ~ 3,
+      gocupa_2d == 44 ~ 4,
+      gocupa_2d %in% c(96,93,83,71,72,92) ~ 5,
+      gocupa_2d %in% c(54,53,91,51,74,73,81) ~ 6,
+      gocupa_2d %in% c(23,22,32) ~ 7,
+      TRUE ~ NA_real_
+    ),
+
+    gr_grupo_ocu = factor(
+      gr_grupo_ocu,
+      levels = 1:7,
+      labels = c(
+        "Funcionarios y directivos",
+        "Profesionales",
+        "Técnicos",
+        "Auxiliares",
+        "Prestadores de servicios indirectos",
+        "Prestadores de servicios directos",
+        "Carreras especiales"
+      )
+    ),
+)
+```
+
+Complementamos el directorio de las categorías ocupacionales
+
+```{r}
+dic_gocupa_2d <- tibble::tribble(
+  ~gocupa_2d, ~gocupa_2d_cat,
+
+  11, "Miembros del Poder Ejecutivo, Legislativo, Judicial y Directores Generales",
+  12, "Directores y gerentes en servicios financieros, administrativos y comerciales",
+  13, "Directores y gerentes de producción, tecnología y transporte",
+  14, "Gerentes de hoteles, restaurantes, comercios, abastecimiento, distribución y otros servicios",
+
+  21, "Profesionales de las ciencias y de la ingeniería",
+  22, "Profesionales de la salud",
+  23, "Profesionales de la enseñanza",
+  24, "Especialistas en organización de la administración pública y de empresas",
+  25, "Profesionales de tecnología de la información y las comunicaciones",
+  26, "Profesionales en derecho, en ciencias sociales y culturales",
+
+  31, "Profesionales técnicos de las ciencias y la ingeniería",
+  32, "Profesionales técnicos de la salud",
+  33, "Profesionales técnicos en operaciones financieras, estadísticas y administrativas",
+  34, "Profesionales técnicos de servicios jurídicos, sociales, culturales y afines",
+  35, "Técnicos en tecnología de la información y las comunicaciones",
+
+  41, "Jefes de áreas administrativas y oficinistas",
+  42, "Empleados en trato directo con el público",
+  43, "Empleados contables y encargados del registro de materiales",
+  44, "Otro personal de apoyo administrativo",
+
+  51, "Trabajadores de los servicios personales",
+  52, "Vendedores",
+  53, "Trabajadores de cuidados personales",
+  54, "Personal de servicios de protección",
+
+  61, "Agricultores y trabajadores calificados de explotaciones agropecuarias con destino al mercado",
+  62, "Trabajadores forestales calificados, pescadores y cazadores",
+  63, "Trabajadores agropecuarios, pescadores, cazadores y recolectores de subsistencia",
+
+  71, "Trabajadores de la construcción, edificación y acabados excluyendo electricistas",
+  72, "Trabajadores de la metalurgia, la construcción metálica y afines",
+  73, "Artesanos y trabajadores en la elaboración de productos de madera, papel, textiles, cuero y piel",
+  74, "Trabajadores especializados en electricidad, equipos electrónicos, telecomunicaciones e instrumentos",
+  75, "Trabajadores en el procesamiento y elaboración de alimentos, bebidas y productos de tabaco",
+
+  81, "Operadores de instalaciones fijas y maquinaria industrial",
+  82, "Ensambladores",
+  83, "Conductores de vehículos y operadores de maquinaria móvil pesada",
+
+  91, "Limpiadores y asistentes domésticos",
+  92, "Peones agropecuarios, pesqueros y forestales",
+  93, "Peones de la minería, la construcción, la industria manufacturera y el transporte",
+  94, "Cocineros y ayudantes de preparación de alimentos",
+  95, "Vendedores ambulantes",
+  96, "Recolectores de desechos y otras ocupaciones elementales",
+
+  1, "Oficiales de las Fuerzas Armadas y Fuerzas Policiales",
+  2, "Suboficiales de las Fuerzas Armadas y Fuerzas Policiales",
+  3, "Otros miembros de las Fuerzas Armadas y Fuerzas Policiales"
+)
+
+base_personas <- base_personas %>%
+  left_join(
+    dic_gocupa_2d,
+    by = "gocupa_2d"
+  )
+
+base_personas <- base_personas %>%
+  mutate(
+    gocupa_2d_cat = factor(
+      gocupa_2d_cat,
+      levels = dic_gocupa_2d$gocupa_2d_cat
+    )
+  )
+```
+
+**Nota metodológica:** 
+Solo se ha categorizado el grupo ocupacional que pertenece al sector público, por ello existe el desglose de prestadores de servicios directos e indirectos.
+
+
+**OBJETOS FINALES DISPONIBLES**
+
+- base_hogares  → una fila por hogar
+- base_personas → una fila por persona
+
+A partir de aquí:
+
+ - base_hogares se alimenta SOLO con variables de nivel hogar
+ - base_personas se alimenta SOLO con variables individuales
+
+Los cruces futuros SIEMPRE serán:
+
+ - left_join(base_hogares, ..., by = "id_hogar")
+ - left_join(base_personas, ..., by = "id_persona")
+
+
+## 6. Limpieza del entorno (Environmental cleaning)
+
+```{r}
+# -------------------------------------------------
+# Conserva solo las bases principales
+# -------------------------------------------------
+
+objetos_conservar <- c(
+  "base_hogares",
+  "base_personas",
+  paste0("enut_2024_", 1:7)
+)
+
+rm(list = setdiff(ls(), objetos_conservar))
+```
+
+## 7. Procesamiento y contrucción de la base de datos de uso del tiempo (Build time dataset)
+
+**7.1 Preparación de la base de datos del uso del tiempo**
+
+**A) Selección de la actividad principal para el análisis**
+
+1. Merging and filter
+
+Se realizó un merge sobre la BD con módulo 600, agregando variables de las BD con módulo 200 para quedarnos solo con resultado completo
+
+```{r}
+base_uso_tiempo <- enut_2024_6 %>%
+  left_join(
+    enut_2024_2 %>%
+      select(
+        id_persona,
+        per_resfin   # resultado final de la encuesta
+      ),
+    by = "id_persona"
+  )
+
+base_uso_tiempo <- base_uso_tiempo %>%
+  filter(per_resfin == 1)
+```
+
+2. Mantenemos solo la primera actividad (actividad principal)
+
+Mantener las variables de la actividad 1, eliminamos actividades 2 y 3
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  select(
+    -p600_dsem_act2, -p600_dsem_act3,
+    -p600_sab_act2,  -p600_sab_act3,
+    -p600_dom_act2,  -p600_dom_act3,
+    -obs_cap600, -resfin_o
+  )
+```
+
+3. Renombramos las variables de la act1 como la actividad general
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%  #renombramos Actividad 1
+  rename(
+    p600_dsem = p600_dsem_act1,
+    p600_sab  = p600_sab_act1,
+    p600_dom  = p600_dom_act1
+  )
+
+base_uso_tiempo <- base_uso_tiempo %>%  #Crea ID temporal
+  mutate(id_temp = row_number())
+
+
+base_uso_tiempo <- base_uso_tiempo %>%  #Ancho a largo
+  pivot_longer(
+    cols = starts_with("p600_"),
+    names_to  = "dia",
+    values_to = "actividad"
+  )
+
+base_uso_tiempo <- base_uso_tiempo %>%  #Elimina ID temporal
+  select(-id_temp)
+
+base_uso_tiempo <- base_uso_tiempo %>%  #Generar tipo-dia
+  mutate(
+    tipo_dia = case_when(
+      dia == "p600_dsem" ~ 1,
+      dia == "p600_sab"  ~ 2,
+      dia == "p600_dom"  ~ 3
+    )
+  )
+
+base_uso_tiempo <- base_uso_tiempo %>%  #Recodifica tipo_dia2 (día semana / fin de semana)
+  mutate(
+    tipo_dia2 = case_when(
+      tipo_dia == 1 ~ 1,   # día de semana
+      tipo_dia %in% c(2, 3) ~ 2
+    )
+  )
+
+base_uso_tiempo <- base_uso_tiempo %>%  #Eliminar variable dia
+  select(-dia)
+
+```
+
+**B) Construcción de las variables agregadas de las actividades (de 4 dígitos a 2 dígitos)**
+
+1. Construcción de sección de actividad (2 primeros dígitos)
+
+Regla:
+ - Si el código tiene 2 dígitos → se usa completo
+ - Si tiene 3 o 4 dígitos → se extraen los 2 primeros
+ 
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    actividad_str = as.character(actividad),
+    
+    division = case_when(
+      nchar(actividad_str) == 2 ~ as.numeric(actividad_str),
+      nchar(actividad_str) >= 3 ~ as.numeric(substr(actividad_str, 1, 2)),
+      TRUE ~ NA_real_
+    )
+  )
+
+base_uso_tiempo <- base_uso_tiempo %>%
+  select(-actividad_str)
+```
+
+2. Grandes divisiones (agregación a un dígito)
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    g_division = case_when(
+      division %in% c(11,12,13,14,10) ~ 1,  # Trabajo ocupación
+      division %in% c(21,22,23)       ~ 2,  # Autoconsumo
+      division %in% c(31:37)          ~ 3,  # Trabajo doméstico
+      division %in% c(41:44)          ~ 4,  # Cuidados no remunerados
+      division %in% c(51:53)          ~ 5,  # Trabajo no remunerado externo
+      division %in% c(61,62)          ~ 6,  # Estudio
+      division %in% c(71:74)          ~ 7,  # Convivencia / recreación
+      division %in% c(81:84)          ~ 8,  # Medios
+      division %in% c(91,92,99)       ~ 9,  # Cuidado personal
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+3. Agrupación de actividades por secciones
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    seccion = case_when(
+      g_division %in% c(1, 2)        ~ 1,  # Trabajo (ocupación + autoconsumo)
+      g_division %in% c(3, 4, 5)     ~ 2,  # Trabajo no remunerado
+      g_division %in% c(6, 7, 8, 9)  ~ 3,  # Actividades personales
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+**C) Construcción de variables para el cálculo del tiempo destinado a cada actividad**
+
+1. Extracción de la hora de inicio y fin destinado a cada actividad
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    # extraemos horas como texto
+    hora_ini_str = substr(hora_id, 1, 5),
+    hora_fin_str = substr(hora_id, 9, 13),
+    
+    # indicador de cruce de medianoche o uso de 24:xx
+    cruza_medianoche = str_detect(hora_id, "24:") |
+      hora_fin_str < hora_ini_str
+  )
+```
+
+2. Convertimos SOLO horas válidas (excluyendo 24:xx)
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    hora_ini_min = if_else(
+      hora_ini_str == "24:00",
+      0,
+      as.numeric(lubridate::hm(hora_ini_str))
+    ),
+    
+    hora_fin_min = if_else(
+      str_detect(hora_fin_str, "24:"),
+      NA_real_,
+      as.numeric(lubridate::hm(hora_fin_str))
+    )
+  )
+```
+
+3. Cálculo de tiempo por cada actividad (10 min en 10 min)
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    tiempo_seg = case_when(
+      cruza_medianoche == TRUE ~ 600,  # regla INEI
+      TRUE ~ hora_fin_min - hora_ini_min
+    )
+  )
+```
+
+4. Se eliminan variables intermedias
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  select(
+    -hora_ini_str, -hora_fin_str,
+    -hora_ini_min, -hora_fin_min,
+    -cruza_medianoche
+  )
+```
+
+5. Conversión a minutos
+
+```{r}
+base_uso_tiempo <- base_uso_tiempo %>%
+  mutate(
+    tiempo_min = tiempo_seg / 60
+  )
+
+```
+
+```{r}
+head(base_uso_tiempo)
+```
+
+**7.2 Cálculo del tiempo destinado a actividades**
+
+**7.2.1. Agregación a nivel de secciones (tr_ocup, tr_no-rem, act_pers)**
+
+1. Agregación a nivel de sección
+
+Sumamos el tiempo por persona, tipo de día y sección
+
+```{r}
+tiempo_ind_seccion_long <- base_uso_tiempo %>%
+  filter(!is.na(seccion), !is.na(tipo_dia)) %>% # Nos quedamos solo con registros bien clasificados
+  group_by(
+    id_persona,
+    factorfinal,
+    tipo_dia,    # 1 = día de semana, 2 = sábado y 3 = domingo
+    seccion      # 1, 2, 3
+  ) %>%
+  summarise(
+    tiempo_seg = sum(tiempo_seg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+head(tiempo_ind_seccion_long)
+```
+**Nota metodológica:**
+El tiempo de uso se agrega a nivel de persona. Para cada sección de actividad se construyen variables diferenciadas por tipo de día (día de semana, sábado y domingo), expresadas en segundos y en formato hh:mm para presentación.
+
+2. Recodificar tipo de día a texto (para nombres de columnas)
+
+```{r}
+tiempo_persona_long <- tiempo_ind_seccion_long %>%
+  mutate(
+    dia_txt = case_when(
+      tipo_dia == 1 ~ "dsem",
+      tipo_dia == 2 ~ "sab",
+      tipo_dia == 3 ~ "dom"
+    )
+  )
+```
+
+3. Crear nombre de variable (sección + día)
+
+```{r}
+tiempo_persona_long <- tiempo_persona_long %>%
+  mutate(
+    var_tiempo = paste0(
+      "t_sec", seccion, "_", dia_txt
+    )
+  )
+```
+
+4. Pasar a formato wide (una fila = una persona)
+
+```{r}
+tiempo_persona_wide <- tiempo_persona_long %>%
+  select(
+    id_persona,
+    factorfinal,
+    var_tiempo,
+    tiempo_seg
+  ) %>%
+  pivot_wider(
+    names_from  = var_tiempo,
+    values_from = tiempo_seg,
+    values_fill = 0
+  )
+```
+
+5. Crear variables de validación (segundos)
+
+Totales = 86400 segundos
+
+```{r}
+tiempo_persona_wide <- tiempo_persona_wide %>%
+  mutate(
+    tot_dsem = t_sec1_dsem + t_sec2_dsem + t_sec3_dsem,
+    tot_sab  = t_sec1_sab  + t_sec2_sab  + t_sec3_sab,
+    tot_dom  = t_sec1_dom  + t_sec2_dom  + t_sec3_dom
+  )
+```
+
+```{r}
+head(tiempo_persona_wide)
+```
+
+6. Eliminar variables de validación
+
+```{r}
+tiempo_persona_wide <- tiempo_persona_wide %>%
+  select(
+    -tot_dsem,
+    -tot_sab,
+    -tot_dom
+  )
+```
+
+7. Merge: Uso del tiempo a Base Maestra de Personas
+
+```{r}
+base_personas <- base_personas %>%
+  left_join(
+    tiempo_persona_wide,
+    by = "id_persona"
+  )
+
+head(base_personas)
+```
+
+8. Tiempo promedio en fin de semana (sabado + domingo)
+
+```{r, message=FALSE, warning=FALSE}
+base_personas <- base_personas %>%
+  mutate(
+    t_sec1_fsem = (t_sec1_sab + t_sec1_dom) / 2, # Sección 1
+    t_sec2_fsem = (t_sec2_sab + t_sec2_dom) / 2, # Sección 2
+    t_sec3_fsem = (t_sec3_sab + t_sec3_dom) / 2  # Sección 3
+  )
+```
+
+**Nota metodológica:** El tiempo de fin de semana se calcula como el promedio simple del tiempo reportado el sábado y el domingo, manteniendo las variables en segundos para su uso analítico.
+
+
+9. Segunda limpieza del entorno
+
+```{r}
+objetos_conservar <- c(
+  "base_hogares",
+  "base_personas",
+  "base_uso_tiempo"
+)
+
+rm(list = setdiff(ls(), objetos_conservar))
+```
+
+**Resultado Final**
+
+base_personas
+
+ - 1 fila = 1 persona
+ - variables en columnas del tiempo por seccion para dsem, sab y dom
+ - tiempo en SEGUNDOS para análisis
+
+
+**7.2.2. Agregación a nivel de divisiones**
+
+1. Etiquetar tipo de día (texto)
+
+```{r}
+bd_uso_tiempo_div <- base_uso_tiempo %>%
+  mutate(
+    tipo_dia_txt = case_when(
+      tipo_dia == 1 ~ "dsem",  # día de semana
+      tipo_dia == 2 ~ "sab",   # sábado
+      tipo_dia == 3 ~ "dom"    # domingo
+    )
+  )
+```
+
+2. Agregación: Suma de tiempo por división
+
+```{r}
+bd_uso_tiempo_div <- bd_uso_tiempo_div %>%
+  filter(!is.na(division)) %>% # Nos quedamos solo con divisiones válidas
+  group_by(
+    id_hogar,
+    id_persona,
+    per_resfin,
+    tipo_dia_txt,
+    division,
+    g_division,
+    seccion
+  ) %>%
+  summarise(
+    tiempo_seg = sum(tiempo_seg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+head(bd_uso_tiempo_div)
+```
+
+
+**Nota metodológica:** Esta base agrega el tiempo de uso a nivel de persona, tipo de día y división de actividad, permitiendo la construcción flexible de cuadros analíticos de trabajo, traslados y actividades personales.
+
+**Resultado final**
+
+bd_uso_tiempo_div:
+
+- 1 fila = persona × tipo de día × división
+- tiempo en segundos (análisis)
+
+Base ideal para:
+
+- cuadros de trabajo (divisiones 11–14)
+- traslados (14, 36, 62, etc.)
+- trabajo remunerado vs no remunerado
+- actividades personales
+
+
+**7.2.3. Variables específicas (desglose de trabajo no remunerado y cuidados)**
+
+0. Ajuste de variables de tiempo y divisiones
+
+Objetivo: Generar una base de datos a nivel de persona con:
+
+  - tiempo destinado a las g_division 3, 4 y 5 (trabajo no remunerado específico)
+  
+  - tiempo destinado a las divisiones 41, 42, 43 y 44 (cuidados)
+
+Guardar la data ordenada para luego fusionarla con base_personas.
+
+1. Creamos las variables del tiempo_seg para cada combinación de interés**
+
+1.1. Para las divisiones 41, 42, 43 y 44
+
+```{r}
+bd_uso_tiempo_div <- bd_uso_tiempo_div %>%
+  mutate(
+    t_41_dsem = if_else(division == 41 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_41_sab  = if_else(division == 41 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_41_dom  = if_else(division == 41 & tipo_dia_txt == "dom",  tiempo_seg, 0),
+
+    t_42_dsem = if_else(division == 42 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_42_sab  = if_else(division == 42 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_42_dom  = if_else(division == 42 & tipo_dia_txt == "dom",  tiempo_seg, 0),
+
+    t_43_dsem = if_else(division == 43 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_43_sab  = if_else(division == 43 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_43_dom  = if_else(division == 43 & tipo_dia_txt == "dom",  tiempo_seg, 0),
+
+    t_44_dsem = if_else(division == 44 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_44_sab  = if_else(division == 44 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_44_dom  = if_else(division == 44 & tipo_dia_txt == "dom",  tiempo_seg, 0)
+  )
+```
+
+1.2. Para las g_division 3, 4 y 5
+
+```{r}
+bd_uso_tiempo_div <- bd_uso_tiempo_div %>%
+  mutate(
+    t_g3_dsem = if_else(g_division == 3 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_g3_sab  = if_else(g_division == 3 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_g3_dom  = if_else(g_division == 3 & tipo_dia_txt == "dom",  tiempo_seg, 0),
+
+    t_g4_dsem = if_else(g_division == 4 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_g4_sab  = if_else(g_division == 4 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_g4_dom  = if_else(g_division == 4 & tipo_dia_txt == "dom",  tiempo_seg, 0),
+
+    t_g5_dsem = if_else(g_division == 5 & tipo_dia_txt == "dsem", tiempo_seg, 0),
+    t_g5_sab  = if_else(g_division == 5 & tipo_dia_txt == "sab",  tiempo_seg, 0),
+    t_g5_dom  = if_else(g_division == 5 & tipo_dia_txt == "dom",  tiempo_seg, 0)
+  )
+```
+
+2. Colapsamos la base de datos a nivel de id_persona
+
+```{r, message=FALSE, warning=FALSE}
+base_tiempo_persona <- bd_uso_tiempo_div %>%
+  group_by(id_persona) %>%
+  summarise(
+    across(
+      c(starts_with("t_41_"),
+        starts_with("t_42_"),
+        starts_with("t_43_"),
+        starts_with("t_44_"),
+        starts_with("t_g3_"),
+        starts_with("t_g4_"),
+        starts_with("t_g5_")),
+      sum,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+base_tiempo_persona <- base_tiempo_persona %>%
+  arrange(id_persona)
+```
+
+3. Promedios y suma
+
+```{r}
+base_tiempo_persona <- base_tiempo_persona %>%
+  mutate(
+    # Promedios fin de semana por divisiones
+    t_41_fsem = (t_41_sab + t_41_dom) / 2,
+    t_42_fsem = (t_42_sab + t_42_dom) / 2,
+    t_43_fsem = (t_43_sab + t_43_dom) / 2,
+    t_44_fsem = (t_44_sab + t_44_dom) / 2,
+
+    # Promedios fin de semana por grupos
+    t_g3_fsem = (t_g3_sab + t_g3_dom) / 2,
+    t_g4_fsem = (t_g4_sab + t_g4_dom) / 2,
+    t_g5_fsem = (t_g5_sab + t_g5_dom) / 2,
+
+    # Sumas finales
+    t_g345_dsem = t_g3_dsem + t_g4_dsem + t_g5_dsem,
+    t_g345_fsem = t_g3_fsem + t_g4_fsem + t_g5_fsem
+  )
+```
+
+## 8. Generación de la base complilada para el análisis (Generate data for analysis)
+
+1. Merge: base_personas y base_tiempo_persona
+
+```{r}
+base_personas <- base_personas %>%
+  left_join(base_tiempo_persona, by = "id_persona")
+```
+
+2. Preparación de variables del tiempo
+
+```{r}
+# Identificar variables que empiezan con t_, son numéricas
+vars_t <- names(base_personas)[
+  str_starts(names(base_personas), "t_") &
+  sapply(base_personas, is.numeric)
+]
+
+# Crear versiones en horas (_h)
+base_personas <- base_personas %>%
+  mutate(
+    across(
+      all_of(vars_t),
+      ~ .x / 3600,
+      .names = "{.col}_h"
+    )
+  )
+```
+
+3. Última limpieza del entorno
+
+```{r}
+objetos_conservar <- c(
+  "base_hogares",
+  "base_personas"
+)
+
+rm(list = setdiff(ls(), objetos_conservar))
+```
+
+
+## 9. Elaboración de Cuadros y Gráficos (Generate tables and graphics)
+
+**1. Gráfico 23: Horas diarias promedio según tipo de actividad y tipo de día**
+
+1.1. Elaboración del Cuadro 1 base para el gráfico
+
+```{r}
+vars_tiempo <- c(
+  "t_sec1_dsem_h", "t_sec2_dsem_h", "t_sec3_dsem_h",
+  "t_sec1_fsem_h", "t_sec2_fsem_h", "t_sec3_fsem_h"
+)
+
+cuadro1 <- base_personas %>%
+  mutate(
+    across(
+      all_of(vars_tiempo),
+      ~ .x * factorfinal,
+      .names = "w_{.col}"
+    )
+  ) %>%
+  group_by(sector, sexo) %>%
+  summarise(
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    across(starts_with("w_"), sum, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    across(
+      starts_with("w_"),
+      ~ .x / N,
+      .names = "prom_{sub('^w_', '', .col)}"
+    )
+  ) %>%
+  select(-starts_with("w_"))
+
+head(cuadro1)
+```
+
+1.2. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+```{r}
+grafico1_N <- cuadro1 %>%
+  filter(sector == "Sector público")
+
+grafico1_N <- grafico1_N %>%
+  summarise(
+    N = sum(N),
+
+    across(
+      starts_with("prom_"),
+      ~ weighted.mean(.x, w = grafico1_N$N, na.rm = TRUE)
+    )
+  )
+
+grafico1_N <- grafico1_N %>%
+  select(starts_with("prom_")) %>%
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "horas"
+  )
+
+grafico1_N <- grafico1_N%>%
+  mutate(
+    tipo_dia = if_else(str_detect(variable, "dsem"), 
+                       "Día de semana", 
+                       "Fin de semana"),
+    tiempo_social = case_when(
+      str_detect(variable, "sec1") ~ "Trabajo en la ocupación",
+      str_detect(variable, "sec2") ~ "Trabajo no remunerado",
+      str_detect(variable, "sec3") ~ "Actividades personales"
+    )
+  )
+
+grafico1_N <- grafico1_N %>%
+  mutate(
+    minutos = round(horas * 60),
+    hhmm = sprintf("%02d:%02d", minutos %/% 60, minutos %% 60)
+  )
+
+grafico1_N <- grafico1_N %>%
+  mutate(
+    `Tiempo social` = factor(
+      tiempo_social,
+      levels = c(
+        "Trabajo en la ocupación",
+        "Trabajo no remunerado",
+        "Actividades personales"
+      )
+    )
+  ) %>%
+  select(
+    `Tipo de día` = tipo_dia,
+    `Tiempo social`,
+    `Sector Público (redondeado)` = hhmm
+  ) %>%
+  arrange(`Tipo de día`, `Tiempo social`)
+
+head(grafico1_N)
+```
+
+1.3. Gráfico N° 23: Horas diarias promedio según tipo de actividad y tipo de día
+
+```{r}
+ggplot(grafico1_N,
+       aes(
+         x = `Tiempo social`,
+         y = as.numeric(
+           substr(`Sector Público (redondeado)`, 1, 2)) +
+         as.numeric(
+           substr(`Sector Público (redondeado)`, 4, 5)) / 60
+       )) +
+  geom_col(fill = "#AE77B1") +
+  geom_text(
+    aes(label = `Sector Público (redondeado)`),
+    vjust = -0.3,
+    size = 3
+  ) +
+  facet_wrap(~ `Tipo de día`) +
+  labs(
+    x = "",
+    y = "Horas promedio"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 15, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+**2. Gráfico 24: Horas semanales promedio por género según tipo de actividad**
+
+2.1. Elaboración del cuadro para el gráfico 24 adaptado a la estructura deseada
+
+Este cuadro se desprende del cuadro 1.
+
+```{r}
+grafico2_N <- cuadro1 %>% 
+  # 1. Filtrar sector público
+  filter(sector == "Sector público") %>% 
+  
+  # 2. Mantener solo variables necesarias
+  select(
+    sexo,
+    prom_t_sec1_dsem_h,
+    prom_t_sec2_dsem_h,
+    prom_t_sec3_dsem_h,
+    prom_t_sec1_fsem_h,
+    prom_t_sec2_fsem_h,
+    prom_t_sec3_fsem_h
+  ) %>% 
+  
+  # 3. Pasar a formato largo
+  pivot_longer(
+    cols = -sexo,
+    names_to  = "variable",
+    values_to = "horas"
+  ) %>% 
+  
+  # 4. Identificar tipo de día, actividad y ponderar
+  mutate(
+    tipo_dia = if_else(
+      str_detect(variable, "dsem"),
+      "Día de semana",
+      "Fin de semana"
+    ),
+    tiempo_social = case_when(
+      str_detect(variable, "sec1") ~ "Trabajo en la ocupación",
+      str_detect(variable, "sec2") ~ "Trabajo no remunerado",
+      str_detect(variable, "sec3") ~ "Actividades personales"
+    ),
+    peso  = if_else(tipo_dia == "Día de semana", 5, 2),
+    horas = horas * peso
+  ) %>% 
+  
+  # 5. Sumar semana + fin de semana
+  group_by(sexo, tiempo_social) %>% 
+  summarise(
+    horas = round(sum(horas)),
+    .groups = "drop"
+  )
+
+head(grafico2_N)
+```
+
+2.2. Gráfico N° 24: Horas semanales promedio por género según tipo de actividad
+
+```{r}
+ggplot(
+  grafico2_N,
+  aes(x = sexo, y = horas, fill = tiempo_social)
+) +
+  geom_col(width = 0.6) +
+  geom_text(
+    aes(label = horas),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Trabajo en la ocupación"   = "#7865AA",
+      "Trabajo no remunerado"     = "#8D4393",
+      "Actividades personales"    = "#AE77B1"
+    )
+  ) +
+  labs(
+    x = "",
+    y = "Horas semanales",
+    fill = "Tiempo social"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+**3. Gráfico 25: Distribución porcentual de las horas semanales1 destinadas al trabajo remunerado y no remunerado, para cada género**
+
+3.1. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+Este cuadro se desprende del cuadro 1
+
+```{r}
+grafico3_N <- cuadro1 %>% 
+  # 1. Sector público
+  filter(sector == "Sector público") %>% 
+  
+  # 2. Solo día de semana
+  select(
+    sexo,
+    prom_t_sec1_dsem_h,  # ocupación
+    prom_t_sec2_dsem_h   # no remunerado
+  ) %>% 
+  
+  # 3. Largo
+  pivot_longer(
+    cols = -sexo,
+    names_to  = "variable",
+    values_to = "horas_diarias"
+  ) %>% 
+  
+  # 4. Identificar actividad y ponderar (×5 días)
+  mutate(
+    tiempo_social = case_when(
+      str_detect(variable, "sec1") ~ "Trabajo en la ocupación",
+      str_detect(variable, "sec2") ~ "Trabajo no remunerado"
+    ),
+    horas = horas_diarias * 5
+  ) %>% 
+  
+  # 5. Sumar por sexo y actividad
+  group_by(sexo, tiempo_social) %>% 
+  summarise(
+    horas = round(sum(horas)),
+    .groups = "drop"
+  ) %>% 
+  
+  # 6. Calcular porcentajes dentro de cada sexo
+  group_by(sexo) %>% 
+  mutate(
+    porcentaje = horas / sum(horas) * 100,
+    porcentaje_lab = paste0(round(porcentaje), "%")
+  ) %>% 
+  ungroup()
+
+head(grafico3_N)
+```
+
+3.2. Gráfico N° 25: Distribución porcentual de las horas semanales1 destinadas al trabajo remunerado y no remunerado, para cada género
+
+```{r}
+ggplot(
+  grafico3_N,
+  aes(x = 2, y = porcentaje, fill = tiempo_social)
+) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  xlim(0.5, 2.5) +                 # hueco central (anillo)
+  facet_wrap(~ sexo) +
+  geom_text(
+    aes(label = porcentaje_lab),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Trabajo en la ocupación" = "#8D4693",
+      "Trabajo no remunerado"   = "#C3AFD3"  
+    )
+  ) +
+  labs(
+    fill = "Tiempo social"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "bottom"
+  )
+```
+
+**4. Gráfico 26: Distribución de horas semanales1 destinadas al trabajo remunerado y no remunerado, según rango de edad y género**
+
+4.1. Elaboración del Cuadro 2 base para el gráfico
+
+```{r}
+cuadro2 <- base_personas %>%
+  filter(sector == "Sector público") %>%
+  mutate(
+    across(
+      all_of(vars_tiempo),
+      ~ .x * factorfinal,
+      .names = "w_{.col}"
+    )
+  ) %>%
+  group_by(rango_edad, sexo) %>%
+  summarise(
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    across(starts_with("w_"), sum, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    across(
+      starts_with("w_"),
+      ~ .x / N,
+      .names = "prom_{sub('^w_', '', .col)}"
+    )
+  ) %>%
+  select(-starts_with("w_"))
+
+head(cuadro2)
+```
+
+4.2. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+```{r}
+grafico4_N<- cuadro2 %>% 
+  # 1. Seleccionar variables necesarias
+  select(
+    sexo,
+    rango_edad,
+    prom_t_sec1_dsem_h,
+    prom_t_sec2_dsem_h,
+    prom_t_sec1_fsem_h,
+    prom_t_sec2_fsem_h
+  ) %>% 
+  
+  # 2. Pasar a formato largo
+  pivot_longer(
+    cols = -c(sexo, rango_edad),
+    names_to  = "variable",
+    values_to = "horas_diarias"
+  ) %>% 
+  
+  # 3. Identificar actividad y tipo de día
+  mutate(
+    tiempo_social = case_when(
+      grepl("sec1", variable) ~ "Trabajo en la ocupación",
+      grepl("sec2", variable) ~ "Trabajo no remunerado"
+    ),
+    tipo_dia = if_else(grepl("dsem", variable),
+                       "Día de semana",
+                       "Fin de semana"),
+    peso = if_else(tipo_dia == "Día de semana", 5, 2),
+    horas = horas_diarias * peso
+  ) %>% 
+  
+  # 4. Sumar horas semanales
+  group_by(rango_edad, sexo, tiempo_social) %>% 
+  summarise(
+    horas = round(sum(horas)),
+    .groups = "drop"
+  )
+
+grafico4_N <- grafico4_N %>% 
+  # Total por edad y sexo (para porcentajes)
+  group_by(rango_edad, sexo) %>% 
+  mutate(
+    total_horas = sum(horas),
+    porcentaje  = round(horas / total_horas * 100)
+  ) %>% 
+  ungroup() %>% 
+  
+  # Pasar a minutos
+  mutate(
+    minutos_num = horas * 60
+  ) %>% 
+  
+  # Espejo:
+  # no remunerado izquierda / ocupación derecha
+  mutate(
+  minutos_plot = if_else(
+    tiempo_social == "Trabajo en la ocupación",
+    -minutos_num,
+    minutos_num
+   )
+  ) %>% 
+  
+  # Etiqueta: "XX%, XX"
+  mutate(
+    label = paste0(porcentaje, "%, ", horas)
+  ) %>% 
+  
+  # Eje Y combinado
+  mutate(
+    y_label = paste(rango_edad, sexo, sep = " – ")
+  )
+
+grafico4_N <- grafico4_N %>%
+  mutate(
+    y_label = factor(
+      y_label,
+      levels = rev(c(
+        "18 a 29 años – Hombre",
+        "18 a 29 años – Mujer",
+        "30 a 39 años – Hombre",
+        "30 a 39 años – Mujer",
+        "40 a 49 años – Hombre",
+        "40 a 49 años – Mujer",
+        "50 a 59 años – Hombre",
+        "50 a 59 años – Mujer",
+        "60 años a más – Hombre",
+        "60 años a más – Mujer"
+      ))
+    )
+  )
+
+head(grafico4_N)
+```
+
+4.3. Gráfico N° 26: Distribución de horas semanales destinadas al trabajo remunerado y no remunerado, según rango de edad y género
+
+```{r}
+ggplot(
+  grafico4_N,
+  aes(
+    x = minutos_plot,
+    y = y_label,
+    fill = sexo
+  )
+) +
+  geom_col(width = 0.55) +
+  geom_text(
+    aes(label = label),
+    color = "white",
+    size = 3.2,
+    fontface = "bold",
+    position = position_stack(vjust = 0.5)
+  ) +
+  geom_vline(xintercept = 0, color = "grey40") +
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer"  = "#7865AA"
+    ),
+    guide = "none"
+  ) +
+  annotate(
+    "text",
+    x = -max(abs(grafico4_N$minutos_plot)) * 0.5,
+    y = Inf,
+    label = "Trabajo en la ocupación",
+    vjust = -0.5,
+    fontface = "bold",
+    size = 4
+  ) +
+  annotate(
+    "text",
+    x =  max(abs(grafico4_N$minutos_plot)) * 0.38,
+    y = Inf,
+    label = "Trabajo no remunerado",
+    vjust = -0.5,
+    fontface = "bold",
+    size = 4
+  ) +
+  scale_x_continuous(
+    labels = function(x)
+      sprintf(
+        "%02d:%02d",
+        abs(x) %/% 60,
+        abs(x) %% 60
+      )
+  ) +
+  labs(
+    x = "Horas semanales",
+    y = NULL
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    plot.margin = margin(t = 30, r = 15, b = 15, l = 15)
+  )
+```
+
+**5. Gráfico 27: Distribución de horas semanales destinadas al trabajo remunerado y no remunerado, según nivel educativo y género**
+
+5.1. Elaboración del Cuadro 3 base para el gráfico
+
+```{r}
+cuadro3 <- base_personas %>%
+  
+  # 1. Filtrar sector
+  filter(sector == "Sector público") %>%
+  
+  # 2. Crear variables ponderadas
+  mutate(
+    w_t_sec1_dsem_h = t_sec1_dsem_h * factorfinal,
+    w_t_sec2_dsem_h = t_sec2_dsem_h * factorfinal,
+    w_t_sec3_dsem_h = t_sec3_dsem_h * factorfinal,
+    w_t_sec1_fsem_h = t_sec1_fsem_h * factorfinal,
+    w_t_sec2_fsem_h = t_sec2_fsem_h * factorfinal,
+    w_t_sec3_fsem_h = t_sec3_fsem_h * factorfinal
+  ) %>%
+  
+  # 3. Colapsar (agregar)
+  group_by(niv_edu, sexo) %>%
+  summarise(
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    
+    w_t_sec1_dsem_h = sum(w_t_sec1_dsem_h, na.rm = TRUE),
+    w_t_sec2_dsem_h = sum(w_t_sec2_dsem_h, na.rm = TRUE),
+    w_t_sec3_dsem_h = sum(w_t_sec3_dsem_h, na.rm = TRUE),
+    w_t_sec1_fsem_h = sum(w_t_sec1_fsem_h, na.rm = TRUE),
+    w_t_sec2_fsem_h = sum(w_t_sec2_fsem_h, na.rm = TRUE),
+    w_t_sec3_fsem_h = sum(w_t_sec3_fsem_h, na.rm = TRUE)
+  ) %>%
+  
+  # 4. Promedios ponderados
+  mutate(
+    prom_t_sec1_dsem_h = w_t_sec1_dsem_h / N,
+    prom_t_sec2_dsem_h = w_t_sec2_dsem_h / N,
+    prom_t_sec3_dsem_h = w_t_sec3_dsem_h / N,
+    prom_t_sec1_fsem_h = w_t_sec1_fsem_h / N,
+    prom_t_sec2_fsem_h = w_t_sec2_fsem_h / N,
+    prom_t_sec3_fsem_h = w_t_sec3_fsem_h / N
+  ) %>%
+  
+  # 5. Eliminar ponderaciones intermedias
+  select(-starts_with("w_"))
+
+head(cuadro3)
+```
+
+5.2. Elaboración del cuadro para el gráfico 5 adaptado a la estructura deseada
+
+```{r}
+grafico5_N<- cuadro3 %>%
+  mutate(
+    
+    # horas semanales
+    trabajo_ocupacion =
+      prom_t_sec1_dsem_h * 5 +
+      prom_t_sec1_fsem_h * 2,
+    
+    trabajo_no_remunerado =
+      prom_t_sec2_dsem_h * 5 +
+      prom_t_sec2_fsem_h * 2,
+    
+    actividades_personales =
+      prom_t_sec3_dsem_h * 5 +
+      prom_t_sec3_fsem_h * 2
+  ) %>%
+  
+  select(
+    niv_edu,
+    sexo,
+    trabajo_ocupacion,
+    trabajo_no_remunerado,
+    actividades_personales
+  )
+
+grafico5_N <- grafico5_N %>%
+  
+  pivot_longer(
+    cols = c(trabajo_ocupacion, trabajo_no_remunerado),
+    names_to = "tipo",
+    values_to = "horas"
+  ) %>%
+  
+  group_by(niv_edu, sexo) %>%
+  
+  mutate(
+    
+    total = sum(horas),
+    
+    porcentaje = round(horas / total * 100),
+    
+    minutos = round(horas * 60),
+    
+    minutos_plot = ifelse(
+      tipo == "trabajo_ocupacion",
+      -minutos,
+      minutos
+    ),
+    
+    label = paste0(
+      porcentaje, "%; ",
+      round(horas)
+    ),
+    
+    y_label = paste(niv_edu, "–", sexo)
+  ) %>%
+  
+  ungroup()
+
+grafico5_N$niv_edu <- factor(
+  grafico5_N$niv_edu,
+  levels = rev(c(
+    "Primaria y Ed. Básica",
+    "Secundaria",
+    "Superior no universitaria",
+    "Universitaria y Postgrado"
+  ))
+)
+
+grafico5_N$y_label <- factor(
+  paste(grafico5_N$niv_edu, "–", grafico5_N$sexo),
+  levels = rev(unique(paste(grafico5_N$niv_edu, "–", grafico5_N$sexo)))
+)
+
+head(grafico5_N)
+```
+
+5.3. Gráfico N° 27: Distribución de horas semanales1 destinadas al trabajo remunerado y no remunerado, según nivel educativo y género
+
+```{r}
+ggplot(
+  grafico5_N,
+  aes(
+    x = minutos_plot,
+    y = y_label,
+    fill = sexo
+  )
+) +
+  
+  geom_col(width = 0.6) +
+  
+  geom_text(
+    aes(label = label),
+    color = "white",
+    size = 3.3,
+    fontface = "bold",
+    position = position_stack(vjust = 0.5)
+  ) +
+  
+  geom_vline(xintercept = 0, color = "grey30") +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer"  = "#7865AA"
+    ),
+    guide = "none"
+  ) +
+  
+  annotate(
+    "text",
+    x = -max(abs(grafico5_N$minutos_plot)) * 0.55,
+    y = Inf,
+    label = "Trabajo en la ocupación",
+    fontface = "bold",
+    size = 4,
+    vjust = -0.6
+  ) +
+  
+  annotate(
+    "text",
+    x = max(abs(grafico5_N$minutos_plot)) * 0.40,
+    y = Inf,
+    label = "Trabajo no remunerado",
+    fontface = "bold",
+    size = 4,
+    vjust = -0.6
+  ) +
+  
+  scale_x_continuous(
+    labels = function(x)
+      sprintf(
+        "%02d:%02d",
+        abs(x) %/% 60,
+        abs(x) %% 60
+      )
+  ) +
+  
+  labs(
+    x = "Horas semanales",
+    y = NULL
+  ) +
+  
+  coord_cartesian(clip = "off") +
+  
+  theme_minimal() +
+  
+  theme(
+    panel.grid.major.y = element_blank(),
+    plot.margin = margin(t = 35, r = 15, b = 15, l = 15)
+  )
+```
+
+**6. Gráfico 28: Distribución de horas semanales1 destinadas al trabajo remunerado y no remunerado, según tenencia de pareja y género**
+
+6.1. Elaboración del Cuadro 4 base para el gráfico
+
+```{r}
+cuadro4 <- base_personas %>%
+  
+  # 1. Filtrar sector
+  filter(sector == "Sector público") %>%
+  
+  # 2. Crear variables ponderadas
+  mutate(
+    w_t_sec1_dsem_h = t_sec1_dsem_h * factorfinal,
+    w_t_sec2_dsem_h = t_sec2_dsem_h * factorfinal,
+    w_t_sec3_dsem_h = t_sec3_dsem_h * factorfinal,
+    w_t_sec1_fsem_h = t_sec1_fsem_h * factorfinal,
+    w_t_sec2_fsem_h = t_sec2_fsem_h * factorfinal,
+    w_t_sec3_fsem_h = t_sec3_fsem_h * factorfinal
+  ) %>%
+  
+  # 3. Colapsar datos
+  group_by(ecivil, sexo) %>%
+  summarise(
+    
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    
+    w_t_sec1_dsem_h = sum(w_t_sec1_dsem_h, na.rm = TRUE),
+    w_t_sec2_dsem_h = sum(w_t_sec2_dsem_h, na.rm = TRUE),
+    w_t_sec3_dsem_h = sum(w_t_sec3_dsem_h, na.rm = TRUE),
+    
+    w_t_sec1_fsem_h = sum(w_t_sec1_fsem_h, na.rm = TRUE),
+    w_t_sec2_fsem_h = sum(w_t_sec2_fsem_h, na.rm = TRUE),
+    w_t_sec3_fsem_h = sum(w_t_sec3_fsem_h, na.rm = TRUE)
+  ) %>%
+  
+  # 4. Promedios ponderados
+  mutate(
+    
+    prom_t_sec1_dsem_h = w_t_sec1_dsem_h / N,
+    prom_t_sec2_dsem_h = w_t_sec2_dsem_h / N,
+    prom_t_sec3_dsem_h = w_t_sec3_dsem_h / N,
+    
+    prom_t_sec1_fsem_h = w_t_sec1_fsem_h / N,
+    prom_t_sec2_fsem_h = w_t_sec2_fsem_h / N,
+    prom_t_sec3_fsem_h = w_t_sec3_fsem_h / N
+  ) %>%
+  
+  # 5. Eliminar ponderaciones
+  select(-starts_with("w_"))
+
+head(cuadro4)
+```
+6.2. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+```{r}
+grafico6_N <- cuadro4 %>%
+  
+  mutate(
+    
+    # Horas semanales
+    trabajo_ocupacion =
+      (prom_t_sec1_dsem_h * 5) +
+      (prom_t_sec1_fsem_h * 2),
+    
+    trabajo_no_remunerado =
+      (prom_t_sec2_dsem_h * 5) +
+      (prom_t_sec2_fsem_h * 2),
+    
+    actividades_personales =
+      (prom_t_sec3_dsem_h * 5) +
+      (prom_t_sec3_fsem_h * 2)
+    
+  ) %>%
+  
+  select(
+    ecivil,
+    sexo,
+    trabajo_ocupacion,
+    trabajo_no_remunerado,
+    actividades_personales
+  ) %>%
+  
+  mutate(
+    
+    # redondear horas
+    trabajo_ocupacion = round(trabajo_ocupacion),
+    trabajo_no_remunerado = round(trabajo_no_remunerado),
+    actividades_personales = round(actividades_personales)
+    
+  )
+
+grafico6_N <- grafico6_N %>%
+  
+  pivot_longer(
+    cols = c(trabajo_ocupacion, trabajo_no_remunerado),
+    names_to = "tipo",
+    values_to = "horas"
+  ) %>%
+  
+  group_by(ecivil, sexo) %>%
+  
+  mutate(
+    
+    total = sum(horas),
+    porcentaje = round(horas / total * 100),
+    
+    minutos = horas * 60,
+    
+    minutos_plot = ifelse(
+      tipo == "trabajo_ocupacion",
+      -minutos,
+      minutos
+    ),
+    
+    label = paste0(
+      porcentaje, "%; ",
+      round(horas)
+    )
+    
+  ) %>%
+  
+  ungroup()
+
+grafico6_N$ecivil <- factor(
+  grafico6_N$ecivil,
+  levels = c("Sin pareja", "Con pareja")
+)
+
+grafico6_N$y_label <- factor(
+  paste(grafico6_N$ecivil, "–", grafico6_N$sexo),
+  levels = rev(unique(paste(grafico6_N$ecivil, "–", grafico6_N$sexo)))
+)
+
+head(grafico6_N)
+```
+
+6.3. Gráfico N° 28: Distribución de horas semanales destinadas al trabajo remunerado y no remunerado, según tenencia de pareja y género
+
+```{r}
+ggplot(
+  grafico6_N,
+  aes(
+    x = minutos_plot,
+    y = y_label,
+    fill = sexo
+  )
+) +
+  
+  geom_col(width = 0.6) +
+  
+  geom_text(
+    aes(label = label),
+    color = "white",
+    size = 3.3,
+    fontface = "bold",
+    position = position_stack(vjust = 0.5)
+  ) +
+  
+  geom_vline(xintercept = 0, color = "grey40") +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer"  = "#7865AA"
+    ),
+    guide = "none"
+  ) +
+  
+  annotate(
+    "text",
+    x = -max(abs(grafico6_N$minutos_plot)) * 0.55,
+    y = Inf,
+    label = "Trabajo en la ocupación",
+    fontface = "bold",
+    size = 4,
+    vjust = -0.5
+  ) +
+  
+  annotate(
+    "text",
+    x = max(abs(grafico6_N$minutos_plot)) * 0.40,
+    y = Inf,
+    label = "Trabajo no remunerado",
+    fontface = "bold",
+    size = 4,
+    vjust = -0.5
+  ) +
+  
+  scale_x_continuous(
+    labels = function(x)
+      sprintf(
+        "%02d:%02d",
+        abs(x) %/% 60,
+        abs(x) %% 60
+      )
+  ) +
+  
+  labs(
+    x = "Horas semanales",
+    y = NULL
+  ) +
+  
+  coord_cartesian(clip = "off") +
+  
+  theme_minimal() +
+  
+  theme(
+    panel.grid.major.y = element_blank(),
+    plot.margin = margin(t = 35, r = 15, b = 15, l = 15)
+  )
+```
+
+**Gráfico 29: Distribución de horas semanales destinadas al trabajo remunerado y no remunerado, según grupo ocupacional y género**
+
+7.1. Elaboración del Cuadro 5 base para el gráfico
+
+```{r}
+cuadro5 <- base_personas %>%
+  filter(sector == "Sector público") %>%
+  mutate(
+    across(
+      all_of(vars_tiempo),
+      ~ .x * factorfinal,
+      .names = "w_{.col}"
+    )
+  ) %>%
+  group_by(gr_grupo_ocu, sexo) %>%
+  summarise(
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    across(starts_with("w_"), sum, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    across(
+      starts_with("w_"),
+      ~ .x / N,
+      .names = "prom_{sub('^w_', '', .col)}"
+    )
+  ) %>%
+  select(-starts_with("w_"))
+
+head(cuadro5)
+```
+
+7.2. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+```{r}
+grafico7_N <- cuadro5 %>%   # reemplaza "base" por el nombre de tu dataframe
+  mutate(
+    
+    trabajo_ocupacion = (prom_t_sec1_dsem_h * 5 + prom_t_sec1_fsem_h * 2),
+    
+    trabajo_no_remunerado = (prom_t_sec2_dsem_h * 5 + prom_t_sec2_fsem_h * 2),
+    
+    actividades_personales = (prom_t_sec3_dsem_h * 5 + prom_t_sec3_fsem_h * 2)
+    
+  ) %>%
+  
+  select(
+    gr_grupo_ocu,
+    sexo,
+    trabajo_ocupacion,
+    trabajo_no_remunerado,
+    actividades_personales
+  ) %>%
+  
+  mutate(
+    sexo = factor(sexo, levels = c("Hombre","Mujer")),
+    
+    gr_grupo_ocu = factor(
+      gr_grupo_ocu,
+      levels = c(
+        "Funcionarios y directivos",
+        "Profesionales",
+        "Técnicos",
+        "Auxiliares",
+        "Prestadores de servicios directos",
+        "Prestadores de servicios indirectos",
+        "Carreras especiales"
+      )
+    )
+  ) %>%
+  
+  arrange(gr_grupo_ocu, sexo)
+
+grafico7_N <- grafico7_N %>%
+  
+  mutate(
+    ocup_min = trabajo_ocupacion * 60,
+    no_rem_min = trabajo_no_remunerado * 60
+  ) %>%
+  
+  pivot_longer(
+    cols = c(ocup_min, no_rem_min),
+    names_to = "tipo",
+    values_to = "minutos"
+  ) %>%
+  
+  group_by(gr_grupo_ocu, sexo) %>%
+  
+  mutate(
+    
+    total = sum(minutos),
+    
+    porcentaje = round(minutos / total * 100),
+    
+    horas = round(minutos / 60),
+    
+    minutos_plot = ifelse(tipo == "ocup_min", -minutos, minutos),
+    
+    label = paste0(
+      porcentaje,
+      "%; ",
+      horas
+    ),
+    
+    y_label = paste(gr_grupo_ocu, sexo, sep = " – ")
+    
+  ) %>%
+  
+  ungroup() %>%
+  
+  mutate(
+    y_label = factor(
+      y_label,
+      levels = rev(c(
+        "Funcionarios y directivos – Hombre",
+        "Funcionarios y directivos – Mujer",
+        "Profesionales – Hombre",
+        "Profesionales – Mujer",
+        "Técnicos – Hombre",
+        "Técnicos – Mujer",
+        "Auxiliares – Hombre",
+        "Auxiliares – Mujer",
+        "Prestadores de servicios directos – Hombre",
+        "Prestadores de servicios directos – Mujer",
+        "Prestadores de servicios indirectos – Hombre",
+        "Prestadores de servicios indirectos – Mujer",
+        "Carreras especiales – Hombre",
+        "Carreras especiales – Mujer"
+      ))
+    )
+  )
+
+head(grafico7_N)
+```
+
+7.3. Gráfico N° 29: Distribución de horas semanales destinadas al trabajo remunerado y no remunerado, según grupo ocupacional y género
+
+```{r fig.width=11, fig.height=9}
+ggplot(
+  grafico7_N,
+  aes(
+    x = minutos_plot,
+    y = y_label,
+    fill = sexo
+  )
+) +
+  
+  geom_col(width = 0.6) +
+  
+  geom_text(
+    aes(label = label),
+    color = "white",
+    size = 3.3,
+    fontface = "bold",
+    position = position_stack(vjust = 0.5)
+  ) +
+  
+  geom_vline(xintercept = 0, color = "grey40") +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer"  = "#7865AA"
+    ),
+    guide = "none"
+  ) +
+  
+  annotate(
+    "text",
+    x = -max(abs(grafico7_N$minutos_plot)) * 0.55,
+    y = Inf,
+    label = "Trabajo en la ocupación",
+    fontface = "bold",
+    size = 4,
+    vjust = -0.5
+  ) +
+  
+  annotate(
+    "text",
+    x = max(abs(grafico7_N$minutos_plot)) * 0.40,
+    y = Inf,
+    label = "Trabajo no remunerado",
+    fontface = "bold",
+    size = 4,
+    vjust = -0.5
+  ) +
+  
+  scale_x_continuous(
+    labels = function(x)
+      sprintf(
+        "%02d:%02d",
+        abs(x) %/% 60,
+        abs(x) %% 60
+      )
+  ) +
+  
+  labs(
+    x = "Horas semanales",
+    y = NULL
+  ) +
+  
+  coord_cartesian(clip = "off") +
+  
+  theme_minimal() +
+  
+  theme(
+    panel.grid.major.y = element_blank(),
+    plot.margin = margin(t = 40, r = 20, b = 20, l = 15)
+  )
+```
+
+**8. Gráfico 30: Carga del trabajo no remunerado por género, según desglose de actividad**
+
+8.1. Elaboración del Cuadro 6 base para el gráfico
+
+```{r}
+vars_tiempo_2 <- c(
+  "t_sec2_dsem_h", "t_sec2_fsem_h",
+  "t_g3_dsem_h", "t_g4_dsem_h", "t_g5_dsem_h",
+  "t_g3_fsem_h", "t_g4_fsem_h", "t_g5_fsem_h"
+)
+
+cuadro6 <- base_personas %>%
+  filter(sector == "Sector público") %>%
+  mutate(
+    across(
+      all_of(vars_tiempo_2),
+      ~ .x * factorfinal,
+      .names = "w_{.col}"
+    )
+  ) %>%
+  group_by(sexo) %>%
+  summarise(
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    across(starts_with("w_"), sum, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    across(
+      starts_with("w_"),
+      ~ .x / N,
+      .names = "prom_{sub('^w_', '', .col)}"
+    )
+  ) %>%
+  select(-starts_with("w_"))
+
+head(cuadro6)
+```
+
+8.2. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+```{r}
+grafico8_N <- cuadro6 %>%
+  
+  mutate(
+    
+    # Trabajo no remunerado total
+    trabajo_no_remunerado =
+      (prom_t_sec2_dsem_h * 5) +
+      (prom_t_sec2_fsem_h * 2),
+    
+    
+    # Trabajo doméstico hogar (g3)
+    domestico_hogar =
+      (prom_t_g3_dsem_h * 5) +
+      (prom_t_g3_fsem_h * 2),
+    
+    
+    # Cuidado miembros hogar (g4)
+    cuidado_hogar =
+      (prom_t_g4_dsem_h * 5) +
+      (prom_t_g4_fsem_h * 2),
+    
+    
+    # Otros hogares / comunidad (g5)
+    otros_hogares =
+      (prom_t_g5_dsem_h * 5) +
+      (prom_t_g5_fsem_h * 2)
+    
+  ) %>%
+  
+  select(
+    sexo,
+    trabajo_no_remunerado,
+    domestico_hogar,
+    cuidado_hogar,
+    otros_hogares
+  )
+
+grafico8_N <- grafico8_N %>%
+  mutate(
+    trabajo_no_remunerado = round(trabajo_no_remunerado),
+    domestico_hogar = round(domestico_hogar,1),
+    cuidado_hogar = round(cuidado_hogar,1),
+    otros_hogares = round(otros_hogares,2)
+  )
+
+temp_8_N <- grafico8_N %>%
+  summarise(
+    trabajo_no_remunerado = sum(trabajo_no_remunerado),
+    domestico_hogar = sum(domestico_hogar),
+    cuidado_hogar = sum(cuidado_hogar),
+    otros_hogares = sum(otros_hogares)
+  )
+
+grafico8_N <- bind_rows(
+  grafico8_N,
+  temp_8_N
+)
+
+head(grafico8_N)
+```
+
+```{r}
+barra_lateral <- grafico8_N %>%
+  filter(sexo %in% c("Hombre","Mujer")) %>%
+  
+  mutate(
+    horas = trabajo_no_remunerado
+  ) %>%
+  
+  select(sexo, horas)
+```
+
+```{r}
+base_graf <- grafico8_N %>%
+  filter(sexo %in% c("Hombre","Mujer")) %>%
+  
+  pivot_longer(
+    cols = c(domestico_hogar, cuidado_hogar, otros_hogares),
+    names_to = "tipo",
+    values_to = "valor"
+  ) %>%
+  
+  mutate(
+    tipo = recode(
+      tipo,
+      domestico_hogar = "Trabajo doméstico",
+      cuidado_hogar   = "Cuidado de miembros del hogar",
+      otros_hogares   = "Trabajo comunitario, voluntario"
+    ),
+    
+    tipo = factor(
+      tipo,
+      levels = c(
+        "Trabajo doméstico",
+        "Cuidado de miembros del hogar",
+        "Trabajo comunitario, voluntario"
+      )
+    )
+  ) %>%
+  
+  group_by(tipo) %>%
+  mutate(
+    porcentaje = valor / sum(valor)
+  ) %>%
+  
+  ungroup()
+```
+
+
+```{r}
+graf_barra <- grafico8_N %>%
+  
+  filter(sexo %in% c("Hombre","Mujer")) %>%
+  
+  ggplot(aes(x = "", y = trabajo_no_remunerado, fill = sexo)) +
+  
+  geom_col(width = 0.6) +
+  
+  geom_text(
+    aes(label = round(trabajo_no_remunerado)),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 5
+  ) +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer"  = "#7865AA"
+    )
+  ) +
+  
+  labs(
+    title = "Trab no remunerado\n(horas semanales)"
+  ) +
+  
+  theme_void() +
+  
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 10, hjust = 0.5)
+  )
+```
+
+```{r}
+graf_anillos <- ggplot(base_graf,
+       aes(x = 2, y = porcentaje, fill = sexo)) +
+  
+  geom_col(width = 1, color = "white") +
+  
+  coord_polar(theta = "y") +
+  
+  xlim(1, 2.5) +
+  
+  geom_text(
+    aes(label = paste0(round(porcentaje*100), "%")),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 4
+  ) +
+  
+  facet_wrap(~tipo, nrow = 1) +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer" = "#7865AA"
+    )
+  ) +
+  
+  theme_void() +
+  
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  )
+```
+
+```{r}
+(graf_barra | graf_anillos) +
+  plot_layout(widths = c(0.5, 3))
+```
+
+**9. Gráfico 31: Carga de las labores de cuidado por género, según desglose de actividad**
+
+9.1. Elaboración del Cuadro 7 base para el gráfico
+
+```{r}
+vars_tiempo_cuidado <- c(
+  "t_g4_dsem_h","t_g4_fsem_h",
+  "t_41_dsem_h","t_41_fsem_h",
+  "t_42_dsem_h","t_42_fsem_h",
+  "t_43_dsem_h","t_43_fsem_h",
+  "t_44_dsem_h","t_44_fsem_h"
+)
+
+cuadro7 <- base_personas %>%
+  
+  filter(sector == "Sector público") %>%
+  
+  mutate(
+    across(
+      all_of(vars_tiempo_cuidado),
+      \(x) x * factorfinal,
+      .names = "w_{.col}"
+    )
+  ) %>%
+  
+  group_by(sexo) %>%
+  
+  summarise(
+    
+    n = sum(per_resfin, na.rm = TRUE),
+    N = sum(factorfinal, na.rm = TRUE),
+    
+    across(starts_with("w_"), \(x) sum(x, na.rm = TRUE)),
+    
+    .groups = "drop"
+    
+  ) %>%
+  
+  mutate(
+    
+    across(
+      starts_with("w_"),
+      \(x) x / N,
+      .names = "prom_{sub('^w_', '', .col)}"
+    )
+    
+  ) %>%
+  
+  select(-starts_with("w_"))
+```
+
+9.2. Elaboración del cuadro para el gráfico adaptado a la estructura deseada
+
+```{r}
+grafico9_N <- cuadro7 %>%
+  
+  mutate(
+    
+    cuidado_total = round(
+      prom_t_g4_dsem_h * 5 +
+      prom_t_g4_fsem_h * 2,
+    1
+    ),
+    
+    cuidado_ninos =
+      prom_t_41_dsem_h * 5 +
+      prom_t_41_fsem_h * 2,
+    
+    cuidado_adultos =
+      prom_t_43_dsem_h * 5 +
+      prom_t_43_fsem_h * 2,
+    
+    otros =
+      (prom_t_42_dsem_h * 5 + prom_t_42_fsem_h * 2) +
+      (prom_t_44_dsem_h * 5 + prom_t_44_fsem_h * 2)
+    
+  ) %>%
+  
+  select(
+    sexo,
+    cuidado_total,
+    cuidado_ninos,
+    cuidado_adultos,
+    otros
+  )
+```
+
+```{r}
+base_graf_cuidado <- grafico9_N %>%
+  
+  pivot_longer(
+    cols = c(cuidado_ninos, cuidado_adultos, otros),
+    names_to = "tipo",
+    values_to = "horas"
+  ) %>%
+  
+  mutate(
+    
+    tipo = recode(
+      tipo,
+      cuidado_ninos = "Cuidado de \n niños (0-14)",
+      cuidado_adultos = "Cuidado de \n adultos mayores",
+      otros = "Otros"
+    ),
+    
+    tipo = factor(
+      tipo,
+      levels = c(
+        "Cuidado de \n niños (0-14)",
+        "Cuidado de \n adultos mayores",
+        "Otros"
+      )
+    )
+  ) %>%
+  
+  group_by(tipo) %>%
+  
+  mutate(
+    porcentaje = horas / sum(horas)
+  ) %>%
+  
+  ungroup()
+```
+
+
+```{r}
+graf_barra_cuidado <- grafico9_N %>%
+  
+  ggplot(aes(x = "", y = cuidado_total, fill = sexo)) +
+  
+  geom_col(width = 0.7) +
+  
+  geom_text(
+    aes(label = round(cuidado_total,1)),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 5
+  ) +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer" = "#7865AA"
+    )
+  ) +
+  
+  labs(
+    title = "Trab de cuidado \n(horas semanales)"
+  ) +
+  
+  theme_void() +
+  
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 11, hjust = 0.5)
+  )
+```
+
+```{r}
+graf_anillos_cuidado <- ggplot(
+  base_graf_cuidado,
+  aes(x = 2, y = porcentaje, fill = sexo)
+) +
+  
+  geom_col(width = 1, color = "white") +
+  
+  coord_polar(theta = "y") +
+  
+  xlim(1, 2.5) +
+  
+  geom_text(
+    aes(label = paste0(round(porcentaje*100), "%")),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 4
+  ) +
+  
+  facet_wrap(~tipo, nrow = 1) +
+  
+  scale_fill_manual(
+    values = c(
+      "Hombre" = "#878786",
+      "Mujer" = "#7865AA"
+    )
+  ) +
+  
+  theme_void() +
+  
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 11)
+  )
+```
+
+```{r}
+(graf_barra_cuidado | graf_anillos_cuidado) +
+  plot_layout(widths = c(1,3))
+```
+
+##FIN.
