@@ -5,7 +5,8 @@ Este repositorio contiene el script reproducible utilizado para el procesamiento
 El análisis forma parte del estudio:
 *La Mujer en el Servicio Civil Peruano, 2026*.
 
-Sub capítulo: **“Tiempo, género y trabajo en el Servicio Civil Peruano”**  
+Sub capítulo IV: **“Tiempo, género y trabajo en el Servicio Civil Peruano”**  
+
 Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-mujer-en-el-servicio-civil-peruano-2026
 
 ## Contenido
@@ -24,4 +25,5 @@ Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-
 
 ## Fuente de datos
 INEI – Encuesta Nacional de Uso del Tiempo 2024.
+
 Fuente de las bases de datos: https://proyectos.inei.gob.pe/microdatos/
