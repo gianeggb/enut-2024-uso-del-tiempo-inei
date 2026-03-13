@@ -9,10 +9,13 @@ Sub capítulo IV: **“Tiempo, género y trabajo en el Servicio Civil Peruano”
 
 Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-mujer-en-el-servicio-civil-peruano-2026
 
-## Contenido
+## Contenido del repositorio
 
-- `script_enut_2024.Rmd` → script reproducible
-- `procesamiento_enut_2024.html` → versión html ejecutada del análisis
+- 📄 **Script reproducible (R Markdown)**  
+  [Ver archivo .Rmd](Estudio_mujer_enut_2024_vf.Rmd)
+
+- 🌐 **Versión HTML del análisis**  
+  [Ver documento HTML](Estudio_mujer_enut_2024_vf.html)
 
 ## Procesamiento realizado
 
