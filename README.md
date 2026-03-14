@@ -26,6 +26,12 @@ Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-
 - Cálculo de indicadores de uso del tiempo
 - Generación de gráficos
 
+## Visualización del análisis
+
+🔎 Ver el documento completo:
+
+https://gianeggb.github.io/enut-2024-uso-del-tiempo-inei/Estudio_mujer_enut_2024_vf.html
+
 ## Fuente de datos
 INEI – Encuesta Nacional de Uso del Tiempo 2024.
 
