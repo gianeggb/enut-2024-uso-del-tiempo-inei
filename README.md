@@ -14,7 +14,7 @@ Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-
 - 📄 **Script reproducible (R Markdown)**  
   [Ver archivo .Rmd](Estudio_mujer_enut_2024_vf.Rmd)
 
-- 🌐 **Versión HTML del análisis** (descargar para ver el archivo) 
+- 🌐 **Versión HTML del análisis** (descargar para ver el archivo)    
   [Ver documento HTML](Estudio_mujer_enut_2024_vf.html)
 
 ## Procesamiento realizado
@@ -25,12 +25,6 @@ Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-
 - Construcción de bases maestras
 - Cálculo de indicadores de uso del tiempo
 - Generación de gráficos
-
-## Visualización del análisis
-
-🔎 Ver el documento completo:
-
-https://gianeggb.github.io/enut-2024-uso-del-tiempo-inei/Estudio_mujer_enut_2024_vf.html
 
 ## Fuente de datos
 INEI – Encuesta Nacional de Uso del Tiempo 2024.
