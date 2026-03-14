@@ -14,7 +14,7 @@ Fuente: https://www.gob.pe/institucion/servir/informes-publicaciones/7823960-la-
 - 📄 **Script reproducible (R Markdown)**  
   [Ver archivo .Rmd](Estudio_mujer_enut_2024_vf.Rmd)
 
-- 🌐 **Versión HTML del análisis**  
+- 🌐 **Versión HTML del análisis** (descargar para ver el archivo) 
   [Ver documento HTML](Estudio_mujer_enut_2024_vf.html)
 
 ## Procesamiento realizado
